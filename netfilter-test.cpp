@@ -5,8 +5,11 @@
 #include <linux/types.h>
 #include <linux/netfilter.h> /* for NF_ACCEPT */
 #include <errno.h>
+#include <libnet.h>
 
 #include <libnetfilter_queue/libnetfilter_queue.h>
+
+char *harmful_website;
 
 void usage()
 {
@@ -14,8 +17,37 @@ void usage()
     printf("sample : netfilter-test test.gilgil.net\n");
 }
 
-bool is_harmful(unsigned char *buf, int size)
+bool is_harmful(char *buf, int size)
 {
+    struct libnet_ipv4_hdr *ip_hdr = (libnet_ipv4_hdr *)(buf);
+
+    if (ip_hdr->ip_p != IPPROTO_TCP)
+        return false;
+
+    int ip_len = ip_hdr->ip_hl << 2;
+
+    struct libnet_tcp_hdr *tcp_hdr = (libnet_tcp_hdr *)((char *)ip_hdr + ip_len);
+
+    if (ntohs(tcp_hdr->th_dport) != 80)
+        return false;
+
+    int tcp_len = tcp_hdr->th_off << 2;
+
+    char *payload = (char *)(tcp_hdr) + tcp_len;
+
+    int payload_len = size - ip_len - tcp_len;
+    if (payload_len == 0)
+        return false;
+
+    char *host = strstr(payload, "\r\nHost: ") + strlen("\r\nHost: ");
+    host = strtok(host, "\r\n");
+
+    if (strncmp(host, harmful_website, strlen(harmful_website)) == 0)
+    {
+        printf("BLOCKED\n");
+        return true;
+    }
+
     return false;
 }
 
@@ -29,7 +61,7 @@ static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
 
     unsigned char *buf;
     int size = nfq_get_payload(nfa, &buf);
-    if (size >= 0 && is_harmful(buf, size))
+    if (size >= 0 && is_harmful((char *)buf, size))
         return nfq_set_verdict(qh, id, NF_DROP, 0, NULL);
     return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
 }
@@ -41,6 +73,8 @@ int main(int argc, char **argv)
         usage();
         return -1;
     }
+
+    harmful_website = argv[1];
 
     struct nfq_handle *h;
     struct nfq_q_handle *qh;
@@ -92,7 +126,7 @@ int main(int argc, char **argv)
     {
         if ((rv = recv(fd, buf, sizeof(buf), 0)) >= 0)
         {
-            printf("pkt received\n");
+            // printf("pkt received\n");
             nfq_handle_packet(h, buf, rv);
             continue;
         }
